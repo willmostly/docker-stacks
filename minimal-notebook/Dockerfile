@@ -1,10 +1,10 @@
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
-ARG OWNER=jupyter
-ARG BASE_CONTAINER=$OWNER/base-notebook
+ARG OWNER=will
+ARG BASE_CONTAINER=$OWNER/fat-ray-jupyter-base-notebook
 FROM $BASE_CONTAINER
 
-LABEL maintainer="Jupyter Project <jupyter@googlegroups.com>"
+LABEL maintainer="Will Morrison <will@starburst.io>"
 
 # Fix: https://github.com/hadolint/hadolint/wiki/DL4006
 # Fix: https://github.com/koalaman/shellcheck/wiki/SC3014
@@ -38,7 +38,7 @@ RUN apt-get update --yes && \
 # Create alternative for nano -> nano-tiny
 RUN update-alternatives --install /usr/bin/nano nano /bin/nano-tiny 10
 
-# Switch back to jovyan to avoid accidental container runs as root
+# Switch back to ray to avoid accidental container runs as root
 USER ${NB_UID}
 
 # Add R mimetype option to specify how the plot returns from R to the browser

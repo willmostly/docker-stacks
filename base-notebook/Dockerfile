@@ -1,14 +1,17 @@
+# This modifies the jupyter base-notebook defined here: https://github.com/willmostly/docker-stacks/blob/main/base-notebook/Dockerfile
+# to run on top of Ray base image. The purpose of this is to bypass Ray's client/server version pickiness by just running the client
+# and server on the same host with the same packages. For convenience, the trino client is also installed.
+# The Ray image is fortunately Ubuntu based, as the original base image for this build was ubuntu
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 
-# Ubuntu 22.04 (jammy)
-# https://hub.docker.com/_/ubuntu/tags?page=1&name=jammy
-ARG ROOT_CONTAINER=ubuntu:22.04
-
+ARG ROOT_CONTAINER=rayproject/ray:444415-py39-cpu
 FROM $ROOT_CONTAINER
 
-LABEL maintainer="Jupyter Project <jupyter@googlegroups.com>"
-ARG NB_USER="jovyan"
+LABEL maintainer="Will Morrison <will@starburst.io>"
+ARG NB_USER="ray"
+# Use same user (ray) for jupyter and ray. 
 ARG NB_UID="1000"
 ARG NB_GID="100"
 
@@ -21,6 +24,7 @@ USER root
 # Install all OS dependencies for notebook server that starts but lacks all
 # features (e.g., download as all possible file formats)
 ENV DEBIAN_FRONTEND noninteractive
+
 RUN apt-get update --yes && \
     # - apt-get upgrade is run to patch known vulnerabilities in apt-get packages as
     #   the ubuntu base image is rebuilt too seldom sometimes (less than once a month)
@@ -38,18 +42,17 @@ RUN apt-get update --yes && \
     #   than one unique  instance  of  some  command with a unique set of arguments,
     #   we use `run-one-constantly` to support `RESTARTABLE` option
     run-one \
-    sudo \
     # - tini is installed as a helpful container entrypoint that reaps zombie
     #   processes and such of the actual executable we want to start, see
     #   https://github.com/krallin/tini#why-tini for details.
-    tini \
-    wget && \
+    tini &&\
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
     locale-gen
 
 # Configure environment
-ENV CONDA_DIR=/opt/conda \
+#MODIFICATION: base image already has anaconda installed. Use it for Jupyter install, do not use mamba
+ENV CONDA_DIR=/home/ray/anaconda3 \
     SHELL=/bin/bash \
     NB_USER="${NB_USER}" \
     NB_UID=${NB_UID} \
@@ -61,7 +64,7 @@ ENV PATH="${CONDA_DIR}/bin:${PATH}" \
     HOME="/home/${NB_USER}"
 
 # Copy a script that we will use to correct permissions after running certain commands
-COPY fix-permissions /usr/local/bin/fix-permissions
+COPY ./fix-permissions /usr/local/bin/fix-permissions
 RUN chmod a+rx /usr/local/bin/fix-permissions
 
 # Enable prompt color in the skeleton .bashrc before creating the default NB_USER
@@ -75,67 +78,50 @@ RUN sed -i 's/^#force_color_prompt=yes/force_color_prompt=yes/' /etc/skel/.bashr
 RUN echo "auth requisite pam_deny.so" >> /etc/pam.d/su && \
     sed -i.bak -e 's/^%admin/#%admin/' /etc/sudoers && \
     sed -i.bak -e 's/^%sudo/#%sudo/' /etc/sudoers && \
-    useradd -l -m -s /bin/bash -N -u "${NB_UID}" "${NB_USER}" && \
-    mkdir -p "${CONDA_DIR}" && \
-    chown "${NB_USER}:${NB_GID}" "${CONDA_DIR}" && \
+    #MODIFICATION - user ray already exists
+    #useradd -l -m -s /bin/bash -N -u "${NB_UID}" "${NB_USER}" && \
+    #mkdir -p "${CONDA_DIR}" && \
+    #chown "${NB_USER}:${NB_GID}" "${CONDA_DIR}" && \
     chmod g+w /etc/passwd && \
-    fix-permissions "${HOME}" && \
-    fix-permissions "${CONDA_DIR}"
+    fix-permissions "${HOME}"
+    #fix-permissions "${CONDA_DIR}"
 
 USER ${NB_UID}
 
 # Pin python version here, or set it to "default"
-ARG PYTHON_VERSION=3.10
+#MODIFICATION - use the default python
+ARG PYTHON_VERSION=default
 
 # Setup work directory for backward-compatibility
 RUN mkdir "/home/${NB_USER}/work" && \
     fix-permissions "/home/${NB_USER}"
 
-# Download and install Micromamba, and initialize Conda prefix.
-#   <https://github.com/mamba-org/mamba#micromamba>
-#   Similar projects using Micromamba:
-#     - Micromamba-Docker: <https://github.com/mamba-org/micromamba-docker>
-#     - repo2docker: <https://github.com/jupyterhub/repo2docker>
-# Install Python, Mamba, Jupyter Notebook, Lab, and Hub
+# Install Jupyter Notebook, Lab, and Hub
 # Generate a notebook server config
 # Cleanup temporary files and remove Micromamba
 # Correct permissions
 # Do all this in a single RUN command to avoid duplicating all of the
 # files across image layers when the permissions change
-COPY --chown="${NB_UID}:${NB_GID}" initial-condarc "${CONDA_DIR}/.condarc"
+
+#replace all the micromamba stuff with conda
+COPY --chown="${NB_UID}:${NB_GID}" ./initial-condarc "${CONDA_DIR}/.condarc"
 WORKDIR /tmp
 RUN set -x && \
-    arch=$(uname -m) && \
-    if [ "${arch}" = "x86_64" ]; then \
-        # Should be simpler, see <https://github.com/mamba-org/mamba/issues/1437>
-        arch="64"; \
-    fi && \
-    wget -qO /tmp/micromamba.tar.bz2 \
-        "https://micromamba.snakepit.net/api/micromamba/linux-${arch}/latest" && \
-    tar -xvjf /tmp/micromamba.tar.bz2 --strip-components=1 bin/micromamba && \
-    rm /tmp/micromamba.tar.bz2 && \
-    PYTHON_SPECIFIER="python=${PYTHON_VERSION}" && \
-    if [[ "${PYTHON_VERSION}" == "default" ]]; then PYTHON_SPECIFIER="python"; fi && \
-    # Install the packages
-    ./micromamba install \
-        --root-prefix="${CONDA_DIR}" \
-        --prefix="${CONDA_DIR}" \
+    conda install \
         --yes \
-        "${PYTHON_SPECIFIER}" \
-        'mamba' \
         'notebook' \
         'jupyterhub' \
         'jupyterlab' && \
-    rm micromamba && \
-    # Pin major.minor version of python
-    mamba list python | grep '^python ' | tr -s ' ' | cut -d ' ' -f 1,2 >> "${CONDA_DIR}/conda-meta/pinned" && \
+    conda list python | grep '^python ' | tr -s ' ' | cut -d ' ' -f 1,2 >> "${CONDA_DIR}/conda-meta/pinned" && \
     jupyter notebook --generate-config && \
-    mamba clean --all -f -y && \
+    conda clean --all -f -y && \
     npm cache clean --force && \
     jupyter lab clean && \
     rm -rf "/home/${NB_USER}/.cache/yarn" && \
     fix-permissions "${CONDA_DIR}" && \
     fix-permissions "/home/${NB_USER}"
+
+RUN pip install trino
 
 EXPOSE 8888
 
